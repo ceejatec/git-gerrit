@@ -6,6 +6,7 @@ DATADIR=.git/gerrit-submit
 usage()
 {
     echo "Usage: git gerrit init [-u <gerrit URL>] [-p <project name>]"
+    echo "       git gerrit update [-b <target branch>]"
     echo "       git gerrit submit [-b <target branch>]"
     echo "       git gerrit new"
     exit
@@ -74,6 +75,40 @@ EOF
     mkdir -p $DATADIR
 }
 
+gerrit_update()
+{
+    # Determine target branch
+    target=master
+    while getopts "b:" OPTION
+    do
+        case $OPTION in
+            b)
+                target=$OPTARG
+                ;;
+        esac
+    done
+
+    # Ensure current branch has no uncommitted changes
+    git diff-index --quiet HEAD || {
+        echo -n "Your current branch has uncommitted changes; please commit all "
+        echo "before merging"
+        exit
+    }
+
+    # Determine current working branch
+    branch=`git rev-parse --abbrev-ref HEAD`
+
+    echo "Updating local $target (should always succeed)..."
+    git checkout $target
+    git pull --ff-only || {
+        echo -n "Failed to update local $target! Resolve conflicts there..."
+        exit 1
+    }
+    echo "Merging local $target onto working branch..."
+    git checkout $branch
+    git merge $target
+}
+
 get_current_branchid()
 {
     branch=`git rev-parse --abbrev-ref HEAD`
@@ -118,19 +153,28 @@ gerrit_submit()
     # temporary branch, and then push that single commit to gerrit.
     git checkout --quiet -B gerrit-submit $target
     git merge --squash $branch || {
-        echo "Error during merge - try merging from $target first"
-        git checkout $branch
+        echo
+        echo "Error during merge - try 'git gerrit update' first"
+        echo 
+        git reset --quiet --hard
+        git checkout --quiet $branch
         exit
     }
 
     # Make sure there's something to commit!
-    git diff-index --quiet HEAD || {
+    git diff-index --quiet HEAD && {
+        echo
         echo -n "No changes were merged - make some commits on your branch "
         echo "before submitting!"
+        echo
+        git reset --quiet --hard
+        git checkout --quiet $branch
         exit 1
     }
 
+    echo
     echo "Merge successful - please provide a meaningful commit message"
+    echo
     git commit
     git push gerrit HEAD:refs/for/$target
 
@@ -199,13 +243,20 @@ prepare_commit_msg()
         CHANGE=`gen_change_id`
         echo $CHANGE > "$DATADIR/id-$BRANCH"
 
+        echo "PLEASE EDIT to provide a meaningful commit message!" > $MSG.new
+        echo >> $MSG.new
+        echo "The following commits from your working branch will be included:"\
+             >> $MSG.new
+        echo >> $MSG.new
         # Filter out Change-Id lines from proposed commit message (in case user
         # has standard Gerrit commit-msg hook installed as well)
-        grep -v '^    Change-Id:' $MSG > $MSG.bak
-        mv $MSG.bak $MSG
+        grep -v '^    Change-Id:' $MSG \
+             | grep -v 'Squashed commit of the following:' >> $MSG.new
+        mv $MSG.new $MSG
 
         # Append new Change-Id
         echo >> $MSG
+        echo "# Do not delete the following line!" >> $MSG
         echo "Change-Id: $CHANGE" >> $MSG
     else
         if test -e "$DATADIR/msg-$BRANCH"
@@ -226,6 +277,10 @@ case "$1" in
     "init" )
         shift
         gerrit_init $@
+        ;;
+    "update" )
+        shift
+        gerrit_update $@
         ;;
     "submit" )
         shift
