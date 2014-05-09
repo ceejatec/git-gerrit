@@ -1,0 +1,245 @@
+#!/bin/bash
+
+# Where to store our private working information
+DATADIR=.git/gerrit-submit
+
+usage()
+{
+    echo "Usage: git gerrit init [-u <gerrit URL>] [-p <project name>]"
+    echo "       git gerrit submit [-b <target branch>]"
+    echo "       git gerrit new"
+    exit
+}
+
+gerrit_init()
+{
+    while getopts "p:u:" OPTION
+    do
+        case $OPTION in
+            p)
+                project=$OPTARG
+                ;;
+            u)
+                url=$OPTARG
+                ;;
+        esac
+    done
+
+    # Determine base URL
+    if test -z "$url"
+    then
+        url=`git config --get gerrit.url`
+        if test -z "$url"
+        then
+            echo -n "Gerrit URL not specified! "
+            echo "You may use 'git gerrit init <gerrit URL>'"
+            echo -n "or you may set the default with "
+            echo "'git config --global gerrit.url <gerrit URL>'"
+            exit 1
+        fi
+    else
+        shift
+    fi
+
+    # Determine project name
+    if test -z "$project"
+    then
+        project=`basename $(git ls-remote --get-url origin)`
+        if test "$project" = "origin"
+        then
+            echo "Cannot determine project based on origin URL - please use "
+            echo "'get gerrit init -p <project name>'"
+            exit 1
+        fi
+    fi
+
+    # Delete gerrit remote if one already exists
+    if test "`git ls-remote --get-url gerrit`" != "gerrit"
+    then
+        git remote remove gerrit
+    fi
+
+    # Add remote
+    git remote add gerrit "${url%%/}/${project}"
+
+    # Add hook
+    cat <<'EOF' > .git/hooks/prepare-commit-msg
+#!/bin/sh
+# Added automatically by git-gerrit
+git gerrit prepare-commit-msg $1
+EOF
+    chmod 755 .git/hooks/prepare-commit-msg
+
+    # Create data directory
+    mkdir -p $DATADIR
+}
+
+get_current_branchid()
+{
+    branch=`git rev-parse --abbrev-ref HEAD`
+    echo $branch | sed -e 's|/|_|g'
+}
+
+gerrit_submit()
+{
+    # Determine target branch
+    target=master
+    while getopts "b:" OPTION
+    do
+        case $OPTION in
+            b)
+                target=$OPTARG
+                ;;
+        esac
+    done
+
+    # Determine current working branch; save for prepare-commit-msg hook
+    branch=`git rev-parse --abbrev-ref HEAD`
+    branchid=`get_current_branchid`
+    echo $branchid > $DATADIR/current_branch
+
+    # Make sure working branch and target are different
+    if test "$target" = "$branch"
+    then
+        echo "Working branch and target are the same - nothing to do!"
+        echo "Please make your changes on a dedicated local branch, not master."
+        exit 1
+    fi
+
+    # Ensure current branch has no uncommitted changes
+    git diff-index --quiet HEAD || {
+        echo -n "Your current branch has uncommitted changes; please commit all "
+        echo "before merging"
+        exit
+    }
+
+    # Logic: Create a temporary branch based on the target
+    # branch. Perform a squash merge of the current branch onto the
+    # temporary branch, and then push that single commit to gerrit.
+    git checkout --quiet -B gerrit-submit $target
+    git merge --squash $branch || {
+        echo "Error during merge - try merging from $target first"
+        git checkout $branch
+        exit
+    }
+
+    # Make sure there's something to commit!
+    git diff-index --quiet HEAD || {
+        echo -n "No changes were merged - make some commits on your branch "
+        echo "before submitting!"
+        exit 1
+    }
+
+    echo "Merge successful - please provide a meaningful commit message"
+    git commit
+    git push gerrit HEAD:refs/for/$target
+
+    # Save commit message for next time, and switch back to working branch
+    git log -1 --format=%B --no-color > $DATADIR/msg-$branchid
+    git checkout --quiet $branch > /dev/null
+}
+
+gen_change_id ()
+{
+    echo -n I
+    {
+        # Borrowed in part from the standard Gerrit commit-msg hook
+        echo "branch $BRANCH"
+        echo "tree `git write-tree`"
+        echo "author `git var GIT_AUTHOR_IDENT`"
+        echo "committer `git var GIT_COMMITTER_IDENT`"
+    } | git hash-object -t blob --stdin
+}
+
+prepare_commit_msg()
+{
+    # Path to commit message so far
+    MSG="$1"
+    shift
+
+    # Determine current branch name
+    # http://stackoverflow.com/questions/6245570/how-to-get-current-branch-name-in-git
+    BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+    # Only do our special magic on the gerrit-submit branch
+    if test "$BRANCH" != "gerrit-submit"
+    then
+        exit
+    fi
+
+    # Determine working branch (set by gerrit submit)
+    if test -e "$DATADIR/current_branch"
+    then
+        BRANCH=`cat $DATADIR/current_branch`
+    else
+        echo "Sorry, something went very wrong..."
+        exit 1
+    fi
+
+    # Determine active Change-Id for working branch
+    if test -e "$DATADIR/id-$BRANCH"
+    then
+        CHANGE=`cat "$DATADIR/id-$BRANCH"`
+        # If this Change-Id already exists in the git log for the *current* 
+        # branch (the target branch), then Gerrit has already merged it and we
+        # should choose a new ID
+        if git log --format=full | grep -q $CHANGE
+        then
+            CHANGE=""
+        fi
+    fi
+
+    # If no active Change-Id, generate one and save it, and populate the
+    # proposed commit message.
+    #
+    # If there IS an active Change-Id, re-use previous commit message
+    # (saved by gerrit submit), which should already include the Change-Id.
+    if test -z "$CHANGE"
+    then
+        CHANGE=`gen_change_id`
+        echo $CHANGE > "$DATADIR/id-$BRANCH"
+
+        # Filter out Change-Id lines from proposed commit message (in case user
+        # has standard Gerrit commit-msg hook installed as well)
+        grep -v '^    Change-Id:' $MSG > $MSG.bak
+        mv $MSG.bak $MSG
+
+        # Append new Change-Id
+        echo >> $MSG
+        echo "Change-Id: $CHANGE" >> $MSG
+    else
+        if test -e "$DATADIR/msg-$BRANCH"
+        then
+            cp $DATADIR/msg-$BRANCH $MSG
+        fi
+    fi
+}
+
+gerrit_new()
+{
+    branchid=`get_current_branchid`
+    rm -f $DATADIR/*$branchid
+}
+
+# First argument is sub-command
+case "$1" in
+    "init" )
+        shift
+        gerrit_init $@
+        ;;
+    "submit" )
+        shift
+        gerrit_submit $@
+        ;;
+    "new" )
+        shift
+        gerrit_new $@
+        ;;
+    "prepare-commit-msg" )
+        shift
+        prepare_commit_msg $@
+        ;;
+    * )
+        usage
+        ;;
+esac
