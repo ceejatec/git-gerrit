@@ -7,7 +7,7 @@ usage()
 {
     echo "Usage: git gerrit init [-u <gerrit URL>] [-p <project name>]"
     echo "       git gerrit update [-b <target branch>]"
-    echo "       git gerrit submit [-b <target branch>]"
+    echo "       git gerrit submit [-b <target branch>] [-d]"
     echo "       git gerrit new"
     exit
 }
@@ -119,14 +119,25 @@ gerrit_submit()
 {
     # Determine target branch
     target=master
-    while getopts "b:" OPTION
+    reffor=for
+    while getopts "b:d" OPTION
     do
         case $OPTION in
             b)
                 target=$OPTARG
                 ;;
+            d)
+                reffor=drafts
+                echo Submitting as DRAFT
+                ;;
         esac
     done
+
+    if ! test -d $DATADIR
+    then
+        echo "Please run 'git gerrit init' on this repository!"
+        exit 1
+    fi
 
     # Determine current working branch; save for prepare-commit-msg hook
     branch=`git rev-parse --abbrev-ref HEAD`
@@ -145,7 +156,7 @@ gerrit_submit()
     git diff-index --quiet HEAD || {
         echo -n "Your current branch has uncommitted changes; please commit all "
         echo "before merging"
-        exit
+        exit 1
     }
 
     # Logic: Create a temporary branch based on the target
@@ -158,7 +169,7 @@ gerrit_submit()
         echo 
         git reset --quiet --hard
         git checkout --quiet $branch
-        exit
+        exit 1
     }
 
     # Make sure there's something to commit!
@@ -176,7 +187,7 @@ gerrit_submit()
     echo "Merge successful - please provide a meaningful commit message"
     echo
     git commit
-    git push gerrit HEAD:refs/for/$target
+    git push gerrit HEAD:refs/${reffor}/$target
 
     # Save commit message for next time, and switch back to working branch
     git log -1 --format=%B --no-color > $DATADIR/msg-$branchid
