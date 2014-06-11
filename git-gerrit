@@ -33,7 +33,7 @@ gerrit_init()
         if test -z "$url"
         then
             echo -n "Gerrit URL not specified! "
-            echo "You may use 'git gerrit init <gerrit URL>'"
+            echo "You may use 'git gerrit init -u <gerrit URL>'"
             echo -n "or you may set the default with "
             echo "'git config --global gerrit.url <gerrit URL>'"
             exit 1
