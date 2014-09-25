@@ -12,8 +12,15 @@ usage()
     exit
 }
 
+cd_to_root()
+{
+    cd `git rev-parse --git-dir`/..
+}
+
 gerrit_init()
 {
+    cd_to_root
+
     while getopts "p:u:" OPTION
     do
         case $OPTION in
@@ -63,20 +70,14 @@ gerrit_init()
     # Add remote
     git remote add gerrit "${url%%/}/${project}"
 
-    # Add hook
-    cat <<'EOF' > .git/hooks/prepare-commit-msg
-#!/bin/sh
-# Added automatically by git-gerrit
-git gerrit prepare-commit-msg $1
-EOF
-    chmod 755 .git/hooks/prepare-commit-msg
-
     # Create data directory
     mkdir -p $DATADIR
 }
 
 gerrit_update()
 {
+    cd_to_root
+
     # Determine target branch
     target=master
     while getopts "b:" OPTION
@@ -106,7 +107,7 @@ gerrit_update()
     }
     echo "Merging local $target onto working branch..."
     git checkout $branch
-    git merge $target
+    git rebase $target
 }
 
 get_current_branchid()
@@ -117,6 +118,8 @@ get_current_branchid()
 
 gerrit_submit()
 {
+    cd_to_root
+
     # Determine target branch
     target=master
     reffor=for
@@ -138,6 +141,16 @@ gerrit_submit()
         echo "Please run 'git gerrit init' on this repository!"
         exit 1
     fi
+
+    # Add hook - we could do this at "git gerrit init" time, but when using
+    # the "repo" tool the hooks directory gets reset on "repo sync" so this
+    # is safer
+    cat <<'EOF' > .git/hooks/prepare-commit-msg
+#!/bin/sh
+# Added automatically by git-gerrit
+git gerrit prepare-commit-msg $1
+EOF
+    chmod 755 .git/hooks/prepare-commit-msg
 
     # Determine current working branch; save for prepare-commit-msg hook
     branch=`git rev-parse --abbrev-ref HEAD`
@@ -279,6 +292,7 @@ prepare_commit_msg()
 
 gerrit_new()
 {
+    cd_to_root
     branchid=`get_current_branchid`
     rm -f $DATADIR/*$branchid
 }
