@@ -1,0 +1,83 @@
+#!/bin/bash
+
+usage()
+{
+    echo "Usage: git asf commit <SHA>"
+    exit
+}
+
+# Returns non-0 if the remote doesn't exist
+check_remote()
+{
+    git config remote.$1.url 2>&1 > /dev/null
+}
+
+# Clean up temp stuff created by script
+finish()
+{
+    # Delete _asf remote if exists
+    if check_remote _asf
+    then
+        git remote rm _asf
+    fi
+}
+trap finish EXIT
+
+cd_to_root()
+{
+    cd `git rev-parse --git-dir`/..
+}
+
+asf_commit()
+{
+    cd_to_root
+
+    # Fetch latest from gerrit
+    if ! check_remote gerrit
+    then
+        echo "Remote 'gerrit' does not exist - please run 'git gerrit init'"
+        exit 2
+    fi
+    echo "Fetching latest state from Gerrit"
+    git fetch gerrit || exit 5
+
+    # Add temporary remote to ASF, including tracking only master and fetching
+    if ! check_remote _asf
+    then
+        project=`basename $(git ls-remote --get-url gerrit)`
+        git remote add _asf -t master "https://git-wip-us.apache.org/repos/asf/incubator-$project"
+    fi
+    echo "Fetching latest state from `git ls-remote --get-url _asf`"
+    git fetch _asf || exit 5
+
+    # Ensure that the SHA argument exists
+    sha=`git rev-parse --quiet --verify $1`
+    if [ -z "$sha" ]
+    then
+        echo "Commit '$1' does not exist!"
+        exit 3
+    fi
+
+    # Ensure that the tip of the _asf master is a parent of the SHA
+    asf_master=`git rev-parse --quiet --verify remotes/_asf/master`
+    if ! git log -1 --pretty=%P $sha | grep $asf_master 2>&1 > /dev/null
+    then
+        echo "SHA '$sha' is not a direct child of the ASF tip!"
+        exit 10
+    fi
+
+    # Finally, all's well - push
+    echo "Pushing $sha to ASF"
+    git push _asf $sha:refs/heads/master
+}
+
+# First argument is sub-command
+case "$1" in
+    "commit" )
+        shift
+        asf_commit $@
+        ;;
+    * )
+        usage
+        ;;
+esac
