@@ -45,7 +45,18 @@ asf_commit()
     if ! check_remote _asf
     then
         project=`basename $(git ls-remote --get-url gerrit)`
-        git remote add _asf -t master "https://git-wip-us.apache.org/repos/asf/incubator-$project"
+        case "$project" in
+            asterixdb)
+                project="incubator-asterixdb"
+                ;;
+            hyracks)
+                project="incubator-asterixdb-hyracks"
+                ;;
+            *)
+                project="incubator-$project"
+                ;;
+        esac
+        git remote add _asf -t master "https://git-wip-us.apache.org/repos/asf/$project"
     fi
     echo "Fetching latest state from `git ls-remote --get-url _asf`"
     git fetch _asf || exit 5
