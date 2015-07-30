@@ -69,6 +69,13 @@ asf_commit()
         exit 3
     fi
 
+    # Ensure that the commit we've been given has already been submitted to Gerrit
+    if ! git branch --quiet -r --contains $1 | grep -q gerrit/master > /dev/null
+    then
+        echo "Commit '$1' has not been submitted in Gerrit."
+        exit 10
+    fi
+
     # Ensure that the tip of the _asf master is a parent of the SHA
     asf_master=`git rev-parse --quiet --verify remotes/_asf/master`
     if ! git log -1 --pretty=%P $sha | grep $asf_master 2>&1 > /dev/null
@@ -77,9 +84,12 @@ asf_commit()
         exit 10
     fi
 
+
+
     # Finally, all's well - push
     echo "Pushing $sha to ASF"
     git push _asf $sha:refs/heads/master
+
 }
 
 # First argument is sub-command
