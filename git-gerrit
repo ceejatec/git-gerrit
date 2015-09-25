@@ -17,6 +17,11 @@ cd_to_root()
     cd `git rev-parse --git-dir`/..
 }
 
+get_upstream()
+{
+    git rev-parse --abbrev-ref @{upstream} 2> /dev/null || echo master
+}
+
 gerrit_init()
 {
     cd_to_root
@@ -79,7 +84,7 @@ gerrit_update()
     cd_to_root
 
     # Determine target branch
-    target=master
+    target=$(get_upstream)
     while getopts "b:" OPTION
     do
         case $OPTION in
@@ -121,7 +126,7 @@ gerrit_submit()
     cd_to_root
 
     # Determine target branch
-    target=master
+    target=$(get_upstream)
     reffor=for
     while getopts "b:d" OPTION
     do
@@ -175,11 +180,12 @@ EOF
     # Logic: Create a temporary branch based on the target
     # branch. Perform a squash merge of the current branch onto the
     # temporary branch, and then push that single commit to gerrit.
+    echo Merging changes on top of $target...
     git checkout --quiet -B gerrit-submit $target
     git merge --squash $branch || {
         echo
         echo "Error during merge - try 'git gerrit update' first"
-        echo 
+        echo
         git reset --quiet --hard
         git checkout --quiet $branch
         exit 1
@@ -248,7 +254,7 @@ prepare_commit_msg()
     if test -e "$DATADIR/id-$BRANCH"
     then
         CHANGE=`cat "$DATADIR/id-$BRANCH"`
-        # If this Change-Id already exists in the git log for the *current* 
+        # If this Change-Id already exists in the git log for the *current*
         # branch (the target branch), then Gerrit has already merged it and we
         # should choose a new ID
         if git log --format=full | grep -q $CHANGE
