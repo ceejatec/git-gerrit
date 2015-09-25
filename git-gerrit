@@ -85,11 +85,18 @@ gerrit_update()
 
     # Determine target branch
     target=$(get_upstream)
-    while getopts "b:" OPTION
+    mergeop=rebase
+    while getopts "b:m" OPTION
     do
         case $OPTION in
             b)
                 target=$OPTARG
+                ;;
+            m)
+                mergeop=merge
+                ;;
+            r)
+                mergeop=rebase
                 ;;
         esac
     done
@@ -112,7 +119,12 @@ gerrit_update()
     }
     echo "Merging local $target onto working branch..."
     git checkout $branch
-    git rebase $target
+    if [ "$mergeop" = "rebase" ]
+    then
+        git rebase $target
+    else
+        git merge -m "Merge from master" --log --no-edit $target
+    fi
 }
 
 get_current_branchid()
