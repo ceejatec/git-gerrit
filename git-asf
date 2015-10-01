@@ -32,6 +32,17 @@ asf_commit()
 {
     cd_to_root
 
+    branch=master
+    while getopts "b:" OPTION
+    do
+        case $OPTION in
+            b)
+                branch=$OPTARG
+                ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
     # Fetch latest from gerrit
     if ! check_remote gerrit
     then
@@ -41,7 +52,7 @@ asf_commit()
     echo "Fetching latest state from Gerrit"
     git fetch gerrit || exit 5
 
-    # Add temporary remote to ASF, including tracking only master and fetching
+    # Add temporary remote to ASF, including tracking only the target branch and fetching
     if ! check_remote _asf
     then
         project=`basename $(git ls-remote --get-url gerrit)`
@@ -56,7 +67,7 @@ asf_commit()
                 project="incubator-$project"
                 ;;
         esac
-        git remote add _asf -t master "https://git-wip-us.apache.org/repos/asf/$project"
+        git remote add _asf -t $branch "https://git-wip-us.apache.org/repos/asf/$project"
     fi
     echo "Fetching latest state from `git ls-remote --get-url _asf`"
     git fetch _asf || exit 5
@@ -70,15 +81,15 @@ asf_commit()
     fi
 
     # Ensure that the commit we've been given has already been submitted to Gerrit
-    if ! git branch --quiet -r --contains $1 | grep -q gerrit/master > /dev/null
+    if ! git branch --quiet -r --contains $1 | grep -q gerrit/$branch > /dev/null
     then
-        echo "Commit '$1' has not been submitted in Gerrit."
+        echo "Commit '$1' has not been submitted to branch $branch in Gerrit."
         exit 10
     fi
 
-    # Ensure that the tip of the _asf master is a parent of the SHA
-    asf_master=`git rev-parse --quiet --verify remotes/_asf/master`
-    if ! git log -1 --pretty=%P $sha | grep $asf_master 2>&1 > /dev/null
+    # Ensure that the tip of the _asf branch is a parent of the SHA
+    asf_tip=`git rev-parse --quiet --verify remotes/_asf/$branch`
+    if ! git log -1 --pretty=%P $sha | grep $asf_tip 2>&1 > /dev/null
     then
         echo "SHA '$sha' is not a direct child of the ASF tip!"
         exit 10
@@ -88,7 +99,7 @@ asf_commit()
 
     # Finally, all's well - push
     echo "Pushing $sha to ASF"
-    git push _asf $sha:refs/heads/master
+    git push _asf $sha:refs/heads/$branch
 
 }
 
