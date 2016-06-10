@@ -6,7 +6,7 @@ DATADIR=.git/gerrit-submit
 usage()
 {
     echo "Usage: git gerrit init [-u <gerrit URL>] [-p <project name>]"
-    echo "       git gerrit update [-b <target branch>]"
+    echo "       git gerrit update [-b <target branch>] [-m]"
     echo "       git gerrit submit [-b <target branch>] [-d]"
     echo "       git gerrit new"
     exit
@@ -94,6 +94,7 @@ gerrit_update()
                 ;;
             m)
                 mergeop=merge
+                echo Using merge update policy
                 ;;
             r)
                 mergeop=rebase
