@@ -7,7 +7,7 @@ usage()
 {
     echo "Usage: git gerrit init [-u <gerrit URL>] [-p <project name>]"
     echo "       git gerrit update [-b <target branch>]"
-    echo "       git gerrit submit [-b <target branch>] [-d] [-t topic]"
+    echo "       git gerrit submit [-b <target branch>] [-d] [-t topic] [-q]"
     echo "       git gerrit new"
     exit
 }
@@ -140,8 +140,8 @@ gerrit_submit()
     # Determine target branch
     target=$(get_upstream)
     reffor=for
-    unset topicspec
-    while getopts "b:dt:" OPTION
+    unset topicspec commitargs
+    while getopts "b:dt:q" OPTION
     do
         case $OPTION in
             b)
@@ -154,6 +154,10 @@ gerrit_submit()
             t)
                 topicspec=/$OPTARG
                 echo Submitting with topic: $OPTARG
+                ;;
+            q)
+                commitargs="$commitargs --no-edit"
+                echo Will skip EDITOR for commit message
                 ;;
         esac
     done
@@ -222,7 +226,7 @@ EOF
     echo
     echo "Merge successful - please provide a meaningful commit message"
     echo
-    git commit
+    git commit ${commitargs}
     git push gerrit HEAD:refs/${reffor}/${target}${topicspec}
 
     # Save commit message for next time, and switch back to working branch
