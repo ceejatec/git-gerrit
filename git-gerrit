@@ -1,7 +1,10 @@
 #!/bin/bash
 
+# Determine .git directory location (needed for worktrees)
+GITCOMMONDIR=$(cd $(git rev-parse --git-common-dir) && pwd)
+
 # Where to store our private working information
-DATADIR=.git/gerrit-submit
+DATADIR=${GITCOMMONDIR}/gerrit-submit
 
 usage()
 {
@@ -14,7 +17,7 @@ usage()
 
 cd_to_root()
 {
-    cd `git rev-parse --git-dir`/..
+    cd $(git rev-parse --show-toplevel)
 }
 
 get_upstream()
@@ -171,12 +174,12 @@ gerrit_submit()
     # Add hook - we could do this at "git gerrit init" time, but when using
     # the "repo" tool the hooks directory gets reset on "repo sync" so this
     # is safer
-    cat <<'EOF' > .git/hooks/prepare-commit-msg
+    cat <<'EOF' > ${GITCOMMONDIR}/hooks/prepare-commit-msg
 #!/bin/sh
 # Added automatically by git-gerrit
 git gerrit prepare-commit-msg $1
 EOF
-    chmod 755 .git/hooks/prepare-commit-msg
+    chmod 755 ${GITCOMMONDIR}/hooks/prepare-commit-msg
 
     # Determine current working branch; save for prepare-commit-msg hook
     branch=`git rev-parse --abbrev-ref HEAD`
