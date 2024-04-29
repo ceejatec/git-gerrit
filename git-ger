@@ -1,0 +1,432 @@
+#!/bin/bash
+
+# Where to store our private working information
+DATADIR=.git/git-gerrit
+
+usage()
+{
+    echo "Usage: git gerrit init [-u <URL>] [-b <default branch>] [-p <project name>] "  >&2
+    echo "       git gerrit update" >&2
+    echo "       git gerrit submit [-d] [-t topic] [-q]" >&2
+    echo "       git gerrit new" >&2
+    exit 1
+}
+
+
+# Set working-branch-related globals based on a branch name
+set_branch_globals()
+{
+    export BRANCH="$1"
+    export BRANCHDIR="$(pwd)/${DATADIR}/${BRANCH}"
+}
+
+
+# Given a branch name, outputs a valid ref name for that branch on a remote.
+# If the remote 'origin' exists, that will be used; otherwise, the first
+# remote alphabetically that is not 'gerrit' will be used. If none is
+# found, outputs empty string.
+find_upstream()
+{
+    local branch=$1
+    ref=$(
+        git for-each-ref --format='%(refname:lstrip=2)' --count=1 \
+        refs/remotes/origin/${branch}
+    )
+    if [ -z "${ref}" ]
+    then
+        ref=$(
+            git for-each-ref --format='%(refname:lstrip=2)' \
+            "refs/remotes/*/${branch}" \
+            | grep -v refs/remotes/gerrit | head -1
+        )
+    fi
+
+    echo "${ref}"
+}
+
+
+get_upstream()
+{
+    git rev-parse --abbrev-ref @{upstream} 2> /dev/null
+}
+
+
+# Check that the current checked-out branch is a valid working branch
+ensure_working_branch()
+{
+    if [ ! -d "${BRANCHDIR}" ]
+    then
+        echo "Current branch '${BRANCH}' is not a git-gerrit working branch!" >&2
+        echo "Create a working branch with 'git gerrit start'" >&2
+        exit 1
+    fi
+}
+
+
+# Removes a working branch and all associated metadata, with confirmation.
+# If that working branch is the current branch, switch to main/master.
+close_working_branch()
+{
+    local $branch=$1
+
+
+
+}
+
+gerrit_init()
+{
+    local project
+    local url
+    while getopts "p:u:b:" OPTION
+    do
+        case $OPTION in
+            p)
+                project=$OPTARG
+                ;;
+            u)
+                url=$OPTARG
+                ;;
+            b)
+                default_branch=$OPTARG
+                ;;
+        esac
+    done
+
+    # Determine base URL
+    if test -z "$url"
+    then
+        url=$(git config --get gerrit.url)
+        if test -z "$url"
+        then
+            echo -n "Gerrit URL not specified! " >&2
+            echo "You may use 'git gerrit init -u <gerrit URL>'" >&2
+            echo -n "or you may set the default with " >&2
+            echo "'git config --global gerrit.url <gerrit URL>'" >&2
+            exit 1
+        fi
+    else
+        shift
+    fi
+
+    # Determine project name
+    if test -z "$project"
+    then
+        project=$(basename $(git ls-remote --get-url origin))
+        if test "$project" = "origin"
+        then
+            echo "Cannot determine project based on origin URL - please use " >&2
+            echo "'get gerrit init -p <project name>'" >&2
+            exit 1
+        fi
+    fi
+
+    # Determine project's default branch name, which is assumed to exist
+    # as a local branch as well
+    if [ -z "$default_branch" ]
+    then
+        defref=$(find_upstream main)
+        if [ -z "${defref}" ]
+        then
+            defref=$(find_upstream master)
+        fi
+        if [ -z "${defref}" ]
+        then
+            echo "Neither 'main' nor 'master' branches exist - please specify" >&2
+            echo "default branch with 'git gerrit init -b <branch name>'" >&2
+            exit 1
+        fi
+        default_branch=$(basename "${defref}")
+    fi
+
+    # Ok, ready to make permanent changes.
+
+    # Delete gerrit remote if one already exists
+    if test "$(git ls-remote --get-url gerrit)" != "gerrit"
+    then
+        git remote remove gerrit
+    fi
+
+    # Add gerrit remote
+    git remote add gerrit "${url%%/}/${project}"
+
+    # Create data directory and save default branch info
+    mkdir -p "${DATADIR}"
+    echo -n "${default_branch}" > "${DATADIR}/default_branch"
+}
+
+
+gerrit_start()
+{
+    local upstream=""
+    local notes=""
+    while getopts ":u:n:" OPTION
+    do
+        case $OPTION in
+            u) upstream=$OPTARG ;;
+            n) notes="$OPTARG" ;;
+            \?) echo "Unknown option '-$OPTION' to git gerrit start" >&2
+                usage ;;
+        esac
+    done
+    shift $(($OPTIND - 1))
+
+    # Reset global variables for new branch
+    set_branch_globals "$1"
+    shift
+    if [ -z "${BRANCH}" ]
+    then
+        echo "I don't know how you did this" >&2
+        usage
+    fi
+
+    if [ -e "${BRANCHDIR}/change-id" ]
+    then
+        echo "Branch '${BRANCH}' is already a git-gerrit working branch!" >&2
+        exit 1
+    fi
+    if git show-ref -q --heads ${BRANCH}
+    then
+        echo "Local branch '${BRANCH}' already exists!"
+        exit 1
+    fi
+
+    # Determine ref for upstream branch
+    local upref
+    if [ -n "${upstream}" ]
+    then
+        upref=$(find_upstream ${upstream})
+    fi
+
+    # Create branch, branchdir, etc.
+    mkdir -p "${BRANCHDIR}"
+    git checkout --quiet -b ${BRANCH} --track ${upref}
+    echo -n "${upref}" > "${BRANCHDIR}/upstream"
+
+    # Create a change-id file - just needs to be a valid git SHA ref for
+    # "something", ideally that won't collide, so just use date
+    echo -n "I$(date | git hash-object -t blob --stdin)" > "${BRANCHDIR}/change-id"
+
+    # Save initial working branch notes
+    echo -n "${notes}" > "${BRANCHDIR}/notes"
+}
+
+
+gerrit_update()
+{
+    # Ensure current branch has no uncommitted changes
+    git diff-index --quiet HEAD || {
+        echo -n "Your current branch has uncommitted changes; please commit all " >&2
+        echo "before merging" >&2
+        exit
+    }
+
+    # Get upstream updates, and see if our change-ID has shown up
+    git fetch --all
+    local upstream=$(cat "${BRANCHDIR}/upstream")
+    local changeid=$(cat "${BRANCHDIR}/change-id")
+    if ! git log --exit-code \
+        --grep="^Change-Id: ${changeid}" ${upstream} "^${BRANCH}" > /dev/null
+    then
+        echo "huh"
+    fi
+    echo "Merging local $target onto working branch..."
+    git checkout $branch
+    if [ "$mergeop" = "rebase" ]
+    then
+        git rebase $target
+    else
+        git merge -m "Merge from master" --log --no-edit $target
+    fi
+}
+
+get_current_branchid()
+{
+    branch=$(git rev-parse --abbrev-ref HEAD)
+    echo $branch | sed -e 's|/|_|g'
+}
+
+gerrit_submit()
+{
+    # Determine target branch
+    target=$(get_upstream)
+    reffor=for
+    unset topicspec commitargs
+    while getopts "b:dt:q" OPTION
+    do
+        case $OPTION in
+            b)
+                target=$OPTARG
+                ;;
+            d)
+                reffor=drafts
+                echo Submitting as DRAFT
+                ;;
+            t)
+                topicspec=/$OPTARG
+                echo Submitting with topic: $OPTARG
+                ;;
+            q)
+                commitargs="$commitargs --no-edit"
+                echo Will skip EDITOR for commit message
+                ;;
+        esac
+    done
+
+    if ! test -d $DATADIR
+    then
+        echo "Please run 'git gerrit init' on this repository!" >&2
+        exit 1
+    fi
+
+    # Add hook - we could do this at "git gerrit init" time, but when using
+    # the "repo" tool the hooks directory gets reset on "repo sync" so this
+    # is safer
+    cat <<'EOF' > .git/hooks/prepare-commit-msg
+#!/bin/sh
+# Added automatically by git-gerrit
+git gerrit prepare-commit-msg $1
+EOF
+    chmod 755 .git/hooks/prepare-commit-msg
+
+    # Determine current working branch; save for prepare-commit-msg hook
+    branch=$(git rev-parse --abbrev-ref HEAD)
+    branchid=$(get_current_branchid)
+    echo $branchid > $DATADIR/current_branch
+
+    # Make sure working branch and target are different
+    if test "$target" = "$branch"
+    then
+        echo "Working branch and target are the same - nothing to do!" >&2
+        echo "Please make your changes on a dedicated local branch, not master." >&2
+        exit 1
+    fi
+
+    # Ensure current branch has no uncommitted changes
+    git diff-index --quiet HEAD || {
+        echo -n "Your current branch has uncommitted changes; please commit all " >&2
+        echo "before merging" >&2
+        exit 1
+    }
+
+    # Logic: Create a temporary branch based on the target
+    # branch. Perform a squash merge of the current branch onto the
+    # temporary branch, and then push that single commit to gerrit.
+    echo Merging changes on top of $target...
+    git checkout --quiet -B gerrit-submit $target
+    git merge --squash $branch || {
+        echo
+        echo "Error during merge - try 'git gerrit update' first" >&2
+        echo
+        git reset --quiet --hard
+        git checkout --quiet $branch
+        exit 1
+    }
+
+    # Make sure there's something to commit!
+    git diff-index --quiet HEAD && {
+        echo
+        echo -n "No changes were merged - make some commits on your branch " >&2
+        echo "before submitting!" >&2
+        echo
+        git reset --quiet --hard
+        git checkout --quiet $branch
+        exit 1
+    }
+
+    echo
+    echo "Merge successful - please provide a meaningful commit message"
+    echo
+    git commit ${commitargs}
+    git push gerrit HEAD:refs/${reffor}/${target}${topicspec}
+
+    # Save commit message for next time, and switch back to working branch
+    git log -1 --format=%B --no-color > $DATADIR/msg-$branchid
+    git checkout --quiet $branch > /dev/null
+}
+
+prepare_commit_msg()
+{
+    # Path to commit message so far
+    MSG="$1"
+    shift
+
+    # Only do our special magic on the gerrit-submit branch
+    if test "$BRANCH" != "gerrit-submit"
+    then
+        exit
+    fi
+
+    # Determine working branch (set by gerrit submit)
+    if test -e "$DATADIR/current_branch"
+    then
+        BRANCH=$(cat $DATADIR/current_branch)
+    else
+        echo "Sorry, something went very wrong..." >&2
+        exit 1
+    fi
+
+    # Determine active Change-Id for working branch
+    if test -e "$DATADIR/id-$BRANCH"
+    then
+        CHANGE=$(cat "$DATADIR/id-$BRANCH")
+        # If this Change-Id already exists in the git log for the *current*
+        # branch (the target branch), then Gerrit has already merged it and we
+        # should choose a new ID
+        if git log --format=full | grep -q $CHANGE
+        then
+            CHANGE=""
+        fi
+    fi
+
+    # If no active Change-Id, generate one and save it, and populate the
+    # proposed commit message.
+    #
+    # If there IS an active Change-Id, re-use previous commit message
+    # (saved by gerrit submit), which should already include the Change-Id.
+    if test -z "$CHANGE"
+    then
+        CHANGE=$(gen_change_id)
+        echo $CHANGE > "$DATADIR/id-$BRANCH"
+
+        echo "PLEASE EDIT to provide a meaningful commit message!" > $MSG.new
+        echo >> $MSG.new
+        echo "The following commits from your working branch will be included:"\
+             >> $MSG.new
+        echo >> $MSG.new
+        # Filter out Change-Id lines from proposed commit message (in case user
+        # has standard Gerrit commit-msg hook installed as well)
+        grep -v '^    Change-Id:' $MSG \
+             | grep -v 'Squashed commit of the following:' >> $MSG.new
+        mv $MSG.new $MSG
+
+        # Append new Change-Id
+        echo >> $MSG
+        echo "# Do not delete the following line!" >> $MSG
+        echo "Change-Id: $CHANGE" >> $MSG
+    else
+        if test -e "$DATADIR/msg-$BRANCH"
+        then
+            cp $DATADIR/msg-$BRANCH $MSG
+        fi
+    fi
+}
+
+# "main"
+
+# Always start at the top of the git directory
+cd $(git rev-parse --git-dir)/..
+
+# Initial value for branch globals based on current branch
+set_branch_globals "$(git rev-parse --abbrev-ref HEAD)"
+
+# Call subcommand based on first argument
+CMD=$1
+FUNC="gerrit_$CMD"
+shift
+if typeset -F "${FUNC}" >/dev/null
+then
+    "${FUNC}" "$@"
+else
+    echo "Unknown git-gerrit subcommand '${CMD}'!" >&2
+    usage
+fi
