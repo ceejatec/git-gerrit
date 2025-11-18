@@ -152,7 +152,7 @@ gerrit_submit()
                 echo Submitting as DRAFT
                 ;;
             t)
-                topicspec=/$OPTARG
+                topicspec="%topic=$OPTARG"
                 echo Submitting with topic: $OPTARG
                 ;;
             q)
